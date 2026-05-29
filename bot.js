@@ -1,10 +1,10 @@
 const mineflayer = require("mineflayer");
-const pathfinder = require('@miner-org/mineflayer-baritone').loader; // Baritone eklendi
-const goals = require('@miner-org/mineflayer-baritone').goals;       // Baritone eklendi
-const { Vec3 } = require('vec3');                                   // Baritone eklendi
+const pathfinder = require('@miner-org/mineflayer-baritone').loader; 
+const goals = require('@miner-org/mineflayer-baritone').goals;       
+const { Vec3 } = require('vec3');                                   
 const { randomInt } = require("crypto");
 const color = require("colors");
-const readline = require('readline'); // Konsol yönetimi eklendi
+const readline = require('readline'); 
 
 const sleep = (toMs) => {
   return new Promise((r) => {
@@ -23,7 +23,6 @@ const state = {
   dead: "dead",
 };
 
-// Konsol kirliliğini önlemek için log değişkenleri
 let loggingMsgs = false;
 let sentPlayercount = false;
 
@@ -33,8 +32,8 @@ class BotInstance {
     
     this.spawned = 0;
     this.currentState = state.offline;
-    this.verifyRequired = false; // Doğrulama durumu takibi
-    this.portalTimeout = null;   // Zamanlayıcı kontrolü
+    this.verifyRequired = false; 
+    this.portalTimeout = null;   
 
     this.startBot();
   }
@@ -42,7 +41,7 @@ class BotInstance {
   startBot() {
     this.verifyRequired = false;
     this.bot = mineflayer.createBot(this.botOptions);
-    this.bot.loadPlugin(pathfinder); // Baritone bota yüklendi
+    this.bot.loadPlugin(pathfinder); 
     this.registerEvents();
   }
 
@@ -71,29 +70,27 @@ class BotInstance {
 
       console.log(color.green(`[${this.botOptions.username}] Dünyaya giriş yaptı (Spawn: ${this.spawned})`));
 
-      // ŞİFRE GİRİŞİ YAPMA (İlk Giriş)
+      // ŞİFRE GİRİŞİ YAPMA (İlk Giriş - Lobi)
       if (this.spawned == 1) {
         await sleep(1500);
-        // Şifreyi doğrudan başlatma ayarlarından (options) güvenli bir şekilde çeker
         this.bot.chat(`/login ${this.botOptions.password}`);
         console.log(color.cyan(`[${this.botOptions.username}] Şifre otomatik olarak gönderildi.`));
 
-        // Eğer 6 saniye içinde chatten verify uyarısı gelmezse portala yürü
-        this.portalTimeout = setTimeout(() => this.walkToPortal(), 6000);
+        // Giriş yaptıktan sonra 6 saniye bekle, verify gelmezse otomatik portala koşmayı dene
+        this.portalTimeout = setTimeout(() => this.autoEnterPortal(), 6000);
       }
 
-      // Oyuncu sayısını konsola basma (İkinci Giriş / Ana Dünyaya Geçiş)
+      // Ana Dünyaya Geçiş (Spawn 2 veya daha fazlası)
       if (this.spawned == 2) {
         if (!sentPlayercount && this.bot.players) {
           const players = Object.values(this.bot.players).filter(
             (p) => p.username !== this.botOptions.username
           );
-          console.log(color.green(`${players.length} oyuncu çevrimiçi.`));
+          console.log(color.green(`${players.length} oyuncu çevrimiçi. Ana dünyaya geçildi.`));
           sentPlayercount = true;
         }
       }
 
-      // Sunucuya tamamen oturunca anti-afk hareketini başlat
       if (this.spawned >= 2) {
         this.movementLoop();
       }
@@ -102,7 +99,6 @@ class BotInstance {
     this.bot.on("messagestr", (ansiMsg) => {
       const msg = ansiMsg.toString();
 
-      // Sunucu mesajlarını konsola temiz bir şekilde basar
       if (!loggingMsgs) {
         console.log(ansiMsg);
       }
@@ -111,13 +107,16 @@ class BotInstance {
       if (msg.includes('6b6t.org/verify') || msg.toLowerCase().includes('verify')) {
         this.verifyRequired = true;
         
-        // Doğrulama istendiyse otomatik portala yürümeyi hemen iptal et
         if (this.portalTimeout) {
           clearTimeout(this.portalTimeout);
         }
+        // Eğer Baritone şu an portala koşuyorsa onu da durdur
+        if (this.bot.ashfinder) {
+          this.bot.ashfinder.stop();
+        }
 
         console.log(color.red("\n========================================"));
-        console.log(`⚠️  [${this.botOptions.username}] DOĞRULAMA GEREKLİ! HAREKET DURDURULDU.`);
+        console.log(`⚠️  [${this.botOptions.username}] DOĞRULAMA GEREKLİ! OTOMATİK PORTAL DURDURULDU.`);
         console.log("Bot şu an lobide güvenle bekliyor. Siteden doğrulamayı tamamla.");
         console.log("========================================\n");
       }
@@ -129,43 +128,79 @@ class BotInstance {
     });
   }
 
-  // Güvenli Lobi Hareketi (Portala Giriş)
-  walkToPortal() {
+  // AKILLI OTOMATİK PORTAL BULMA VE İÇİNE GİRME FONKSİYONU
+  async autoEnterPortal() {
     if (this.verifyRequired || this.currentState !== state.online) {
-      console.log(color.yellow(`[PORTAL] Doğrulama beklendiği için yürünmedi, lobide bekleniyor.`));
+      console.log(color.yellow(`[PORTAL] Doğrulama beklendiği için otomatik portal araması iptal edildi.`));
       return;
     }
-    console.log(color.cyan(`[PORTAL] Giriş başarılı. Portala doğru düz yürüme başlatıldı...`));
+
+    console.log(color.cyan(`[PORTAL] Çevredeki portal blokları taranıyor...`));
+
+    try {
+      // Botun etrafındaki 32 blokluk alanda portal bloklarını aratıyoruz
+      const portalBlocks = this.bot.findBlocks({
+        matching: (block) => block.name === 'nether_portal' || block.name === 'portal',
+        maxDistance: 32,
+        count: 1
+      });
+
+      if (portalBlocks.length > 0) {
+        const portalPos = portalBlocks[0];
+        console.log(color.green(`[PORTAL] Portal bulundu! Koordinat: X:${portalPos.x} Y:${portalPos.y} Z:${portalPos.z}`));
+        console.log(color.cyan(`[PORTAL] Baritone portalın içine doğru harekete geçiyor...`));
+        
+        // Baritone'a portalın tam koordinatını hedef olarak veriyoruz
+        const goal = new goals.GoalExact(portalPos);
+        await this.bot.ashfinder.goto(goal);
+      } else {
+        // Eğer etrafta portal bloku bulamazsa eski düz yürüme sistemini yedek olarak çalıştırır
+        console.log(color.yellow(`[PORTAL] Yakında portal bloku tespit edilemedi! Yedek düz yürüme başlatılıyor...`));
+        this.walkToPortalBackup();
+      }
+    } catch (err) {
+      console.log(color.red(`[PORTAL HATA] Portal aranırken bir sorun oluştu, düz yürünüyor.`), err);
+      this.walkToPortalBackup();
+    }
+  }
+
+  // Yedek Düz Yürüme Sistemi (Eğer lobi haritası yüklenmediyse veya blok bulunamadıysa)
+  walkToPortalBackup() {
+    if (this.verifyRequired || this.currentState !== state.online) return;
+    
     this.bot.setControlState("forward", true);
     this.bot.setControlState("jump", true);
 
     setTimeout(() => {
       this.bot.setControlState("forward", false);
       this.bot.setControlState("jump", false);
-      console.log(color.cyan(`[PORTAL] Lobi hareket süresi doldu.`));
+      console.log(color.cyan(`[PORTAL] Yedek lobi hareketi bitti.`));
     }, 5000);
   }
 
-  // Temiz Anti-AFK ve Rastgele Etrafa Bakma Döngüsü (Sadece Ana Dünyada Çalışır)
+  // Optimize Edilmiş Stabil Anti-AFK Döngüsü
   async movementLoop() {
-    const maxMotionDelay = 2000;
+    const maxMotionDelay = 1000;
     while (this.currentState === state.online && !this.verifyRequired) {
-      if (getRandomBoolean()) {
-        this.bot.setControlState("jump", true);
-        await sleep(randomInt(10, maxMotionDelay));
-        this.bot.setControlState("jump", false);
+      try {
+        if (getRandomBoolean()) {
+          this.bot.setControlState("jump", true);
+          await sleep(randomInt(50, maxMotionDelay));
+          this.bot.setControlState("jump", false);
+        }
+        if (getRandomBoolean()) {
+          this.bot.setControlState("forward", true);
+          await sleep(randomInt(50, maxMotionDelay));
+          this.bot.setControlState("forward", false);
+        }
+        this.bot.look(randomInt(-180, 180), randomInt(-90, 90));
+      } catch (err) {
+        break;
       }
-      if (getRandomBoolean()) {
-        this.bot.setControlState("forward", true);
-        await sleep(randomInt(10, maxMotionDelay));
-        this.bot.setControlState("forward", false);
-      }
-      this.bot.look(randomInt(-180, 180), randomInt(-360, 360));
-      await sleep(1000); // Sunucuyu yormayacak stabil döngü aralığı
+      await sleep(3000); 
     }
   }
 
-  // Güvenli Yeniden Bağlanma (Auto-Reconnect) Fonksiyonu
   async reconnect() {
     if (this.currentState === state.reconnecting) return;
     this.currentState = state.reconnecting;
@@ -175,7 +210,6 @@ class BotInstance {
     }
 
     this.spawned = 0;
-    // Eğer botOptions içinde reconnectDelay yoksa otomatik 1 dakika (60000 ms) bekler
     const delay = this.botOptions.reconnectDelay || 60000; 
     console.log(color.yellow(`[YENİDEN BAĞLANTI] Bot ${delay / 1000} saniye sonra tekrar bağlanacak...`));
     
@@ -196,7 +230,6 @@ rl.on('line', async (line) => {
     const input = line.trim();
     if (!input || !activeBotInstance || !activeBotInstance.bot) return;
 
-    // Konsola # yazarak Baritone'u yönetebilirsin
     if (input.startsWith('#')) {
         const args = input.substring(1).split(' ');
         const cmd = args[0].toLowerCase();
@@ -204,7 +237,6 @@ rl.on('line', async (line) => {
 
         try {
             if (cmd === 'goto' && args.length >= 4) {
-                // Konsola şunu yazabilirsin: #goto 150 64 -200
                 const x = parseInt(args[1]);
                 const y = parseInt(args[2]);
                 const z = parseInt(args[3]);
@@ -220,12 +252,10 @@ rl.on('line', async (line) => {
             console.log(color.red('[BARITONE HATA]'), err);
         }
     } else {
-        // Konsola direkt bir şey yazarsan oyundaki chatte paylaşır
         activeBotInstance.bot.chat(input);
     }
 });
 
-// Projenin ana index.js yapısına uyum sağlaması için dışa aktarma fonksiyonu
 module.exports = function(options) {
     const instance = new BotInstance(options);
     activeBotInstance = instance;
